@@ -30,6 +30,23 @@ String ByteArrayToStringHex(uint8_t *byteArray, size_t size) {
   }
   return rtr;
 }
+void printByteArray(const uint8_t *byteArray, size_t size) {
+  for (size_t i = 0; i < size; ++i) {
+    Serial.print(byteArray[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();  // Print a newline after the array
+}
+
+void hexStringToByteArray(const String& hexString, uint8_t* byteArray, size_t arraySize) {
+  for (size_t i = 0; i < arraySize; ++i) {
+    // Extract two characters from the hex string
+    String hexByte = hexString.substring(i * 2, i * 2 + 2);
+
+    // Convert the substring to a long (base 16) and store it in the byte array
+    byteArray[i] = strtol(hexByte.c_str(), NULL, 16);
+  }
+}
 #include <ArduinoJson.h>  //v7
 
 JsonDocument Hieroglossa_message;
@@ -135,8 +152,9 @@ String decrypt(String msg) {
   String cipher = "";
   String result = "";
   time_elapsed = micros();
-  byte iv[20];
-  iv_decrypt.getBytes(iv, 16);
+  byte iv[16];
+  hexStringToByteArray(iv_decrypt, iv, 16);
+  Serial.println(ByteArrayToStringHex(iv, 16));
   for (int i = 0; i < hexString.length(); i += 2) {
     String hexByte = hexString.substring(i, i + 2);
     char c = strtol(hexByte.c_str(), NULL, 16);
@@ -163,7 +181,6 @@ String decrypt(String msg) {
   time_elapsed = micros() - time_elapsed;
   Serial.println("Decryption result: " + result);
   Serial.println("Decryption time /us: " + String(time_elapsed));
-  Serial.println("Decrypted.");
   return result;
 }
 
