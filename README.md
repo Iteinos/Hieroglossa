@@ -1,6 +1,6 @@
 # Hieroglossa Development Project - Version 0.1.2
 
-##Platform: ESP32
+Platform: ESP32
 
 **Features:**
 
