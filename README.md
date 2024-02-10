@@ -10,6 +10,6 @@ Platform: ESP32
   - **Mode:** Cipher Block Chaining (CBC)
   - **Padding:** PKCS7
   - **IV:** Randomly shuffled
-- **1 to 1 ECDH Key Exchange**
+- **1 to Multi ECDH Key Exchange with Keyring**
 
 
