@@ -1,6 +1,6 @@
-#include <Crypto.h>  //Arduino Cryptography Library
+#include <Crypto.h>
 #include <AES.h>
-#include <uECC.h>  //Elliptical Curvature Cryptography
+#include <uECC.h>
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 #include <soc/rtc_wdt.h>
@@ -8,7 +8,7 @@ void removeBackslashes(String &str) {
   for (int i = 0; i < str.length(); i++) {
     if (str.charAt(i) == '\\') {
       str.remove(i, 1);
-      i--;  // Decrement i to recheck the current position since characters have shifted left
+      i--;
     }
   }
 }
@@ -211,101 +211,88 @@ uint8_t private_key[21];
 uint8_t public_key[40];
 uint8_t recipient_public_key[40];
 uint8_t secret[20];
-String ECDH_String;
+
+
+class mesh_object {
+public:
+  JsonDocument doc;
+  String str;
+  uint32_t ID = 0;
+  mesh_object() {
+    // Optionally initialize members here
+  }
+  ~mesh_object() {
+    // Optionally clean up resources here
+  }
+  void deser() {
+    deserializeJson(doc, str);
+  }
+  void ser() {
+    serializeJson(doc, str);
+  }
+};
+
+mesh_object inbound;
+mesh_object outbound;
+
 uint32_t ECDH_exchange_pending_id = 0;
 unsigned int AES_friendliness_pending_id = 0;
 
 static int RNG(uint8_t *dest, unsigned size) {
-  // Use the least-significant bits from the ADC for an unconnected pin (or connected to a source of
-  // random noise). This can take a long time to generate random data if the result of analogRead(0)
-  // doesn't change very frequently.
   while (size) {
     uint8_t val = 0;
     for (unsigned i = 0; i < 8; ++i) {
       int init = analogRead(35);
       int count = 0;
-      while (analogRead(35) + random(-100, 100) == init) {
-        ++count;
-      }
-
-      if (count == 0) {
-        val = (val << 1) | (init & 0x01);
-      } else {
-        val = (val << 1) | (count & 0x01);
-      }
+      while (analogRead(35) + random(-100, 100) == init) ++count;
+      if (count == 0) val = (val << 1) | (init & 0x01);
+      else val = (val << 1) | (count & 0x01);
     }
     *dest = val;
     ++dest;
     --size;
   }
-  // NOTE: it would be a good idea to hash the resulting random data using SHA-256 or similar.
   return 1;
 }
 
-void ECDH_initiate_exchange(uint8_t *public_key_p, size_t size) {
-  Serial.println("Initiate ECDH Exchange.");
-  JsonDocument ECDH_Message;
-  String ECDH_hex = ByteArrayToStringHex(public_key_p, size);
-  ECDH_Message["Intention"] = "ECDH_Exchange";
-  ECDH_Message["ECDH_Key"] = ECDH_hex;
-  serializeJson(ECDH_Message, ECDH_String);
-  Serial.println(ECDH_String);
-  Serial.println("Pinging stranger..");
-}
-
-void ECDH_reciprocate_exchange(String ECDH_received_String) {
-  JsonDocument ECDH_received_Message;
-  deserializeJson(ECDH_received_Message, ECDH_received_String);
-  String recipient_public_key_str = ECDH_received_Message["ECDH_Key"];
-  Serial.println(recipient_public_key_str);
-  hexStringToByteArray(recipient_public_key_str, recipient_public_key, recipient_public_key_str.length());
-  Serial.println("Finishing ECDH Exchange.");
-  uint32_t i = 0;
-  while (!ECDH_compute_key()) {
-    i++;
-    if (i > 20) {
-      Serial.println("ECDH Transaction Failed.");
-      break;
-    }
-  }
-}
-// Function to perform ECDH key exchange
-void ECDH_generate_key() {
-  Serial.println("Generating ECC Key.");
-  // Generate the random public-private key pair
-  uECC_make_key(public_key, private_key, curve);
-  Serial.println("Generated ECC key pair: \nECC Public: " + ByteArrayToStringHex(public_key, sizeof(public_key)) + "\nECC Private: " + ByteArrayToStringHex(private_key, sizeof(private_key)));
-  Serial.println();
-}
-bool ECDH_compute_key() {
-  // Calculate shared key
-  if (!uECC_shared_secret(recipient_public_key, private_key, secret, curve)) {
-    Serial.println("Error: failed computing a shared AES key, retry.");
-    return 0;
-  } else {
-    key = ByteArrayToStringHex(secret, sizeof(secret));
-    Serial.println("\nNode ID " + String(ECDH_exchange_pending_id) + ": AES key acquired via ECDH: " + key);
-    keyring[String(ECDH_exchange_pending_id)] = key;
-    ECDH_exchange_pending_id = 0;
-    return 1;
-  }
-}
-
-void received_JSON_parser(uint32_t sender, String &received_JSON_message) {
-  JsonDocument received_JSON_document;
-  deserializeJson(received_JSON_document, received_JSON_message);
-  Serial.println("Received Raw: " + received_JSON_message);
-  if (received_JSON_document["Intention"] == "ECDH_Exchange") {
-    if (ECDH_exchange_pending_id == sender && sender != 0) {
+TaskHandle_t ECDH_Handle;
+String aes_msg;
+void mesh_received_message_JSON_parser(uint32_t sender, String &received_JSON_message) {
+  inbound.str = received_JSON_message;
+  inbound.deser();
+  Serial.println("Received Raw: " + inbound.str);
+  if (inbound.doc["Intention"] == "ECDH_Exchange") {
+    if (ECDH_exchange_pending_id == sender) {
       Serial.println("\nProcessing Message.");
-      ECDH_reciprocate_exchange(received_JSON_message);
+      String recipient_public_key_str = inbound.doc["ECDH_Key"];
+      Serial.println(recipient_public_key_str);
+      hexStringToByteArray(recipient_public_key_str, recipient_public_key, recipient_public_key_str.length());
+      Serial.println("Finishing ECDH Exchange.");
+      if (!uECC_shared_secret(recipient_public_key, private_key, secret, curve)) {
+        Serial.println("Error: failed computing a shared AES key, retry.");
+      } else {
+        key = ByteArrayToStringHex(secret, sizeof(secret));
+        Serial.println("\nNode ID " + String(ECDH_exchange_pending_id) + ": AES key acquired via ECDH: " + key);
+        keyring[String(ECDH_exchange_pending_id)] = key;
+        ECDH_exchange_pending_id = 0;
+      }
       AES_friendliness_pending_id = sender;
+      JsonDocument AES_Message;
+      JsonDocument clavis_obfuscata;
+      String clavis = encrypt(key);
+      deserializeJson(clavis_obfuscata, clavis);
+      AES_Message["Intention"] = "AES_TEST";
+      AES_Message["Event_ID"] = String(mesh.getNodeTime());
+      AES_Message["AES_Key"]["IV"] = clavis_obfuscata["IV"];
+      AES_Message["AES_Key"]["Payload"] = clavis_obfuscata["Payload"];
+      serializeJson(AES_Message, aes_msg);
+    } else {
     }
-  } else if (received_JSON_document["Intention"] == "AES_Friendliness_test" && AES_friendliness_pending_id > 0) {
+  } else if (inbound.doc["Intention"] == "AES_TEST" && AES_friendliness_pending_id > 0) {
     String encrypted_payload;
     JsonDocument encryption_literal;
-    encryption_literal["IV"] = received_JSON_document["AES_Key"]["IV"];
-    encryption_literal["Payload"] = received_JSON_document["AES_Key"]["Payload"];
+    encryption_literal["IV"] = inbound.doc["AES_Key"]["IV"];
+    encryption_literal["Payload"] = inbound.doc["AES_Key"]["Payload"];
     serializeJson(encryption_literal, encrypted_payload);
     Serial.println("Received Payload Raw: " + encrypted_payload);
     if (decrypt(encrypted_payload) == key) {
@@ -314,6 +301,7 @@ void received_JSON_parser(uint32_t sender, String &received_JSON_message) {
       keyring[key_id] = key;
       Serial.println("Secure channel established with Node " + key_id);
       Serial.println("Key " + key + " saved to keyring for Node " + key_id);
+      ECDH_exchange_pending_id = 0;
       AES_friendliness_pending_id = 0;
     } else Serial.println("Not a match.");
   } else {
@@ -321,123 +309,71 @@ void received_JSON_parser(uint32_t sender, String &received_JSON_message) {
   }
 }
 
-void newConnectionCallback(uint32_t nodeId) {
-  Serial.println("Connected with node: " + String(nodeId));
-  String savedCredentials = keyring[String(nodeId)];
+void ECDH_handshake(uint32_t nodeId) {
+  outbound.ID = nodeId;
+  Serial.println("Connected with node: " + String(outbound.ID));
+  String savedCredentials = keyring[String(outbound.ID)];
   Serial.println("Saved Credentials: " + savedCredentials);
   if (savedCredentials != "null") {
     Serial.println("Node is a friend.");
-    AES_friendliness_pending_id = nodeId;
+    //AES_friendliness_pending_id = nodeId;
+    ECDH_exchange_pending_id = outbound.ID;
   } else {
     Serial.println("Node is a stranger.");
-    ECDH_generate_key();
-    ECDH_exchange_pending_id = nodeId;
-    ECDH_initiate_exchange(public_key, sizeof(public_key));
+    Serial.println("Generating ECC Key.");
+    // Generate the random public-private key pair
+    uECC_make_key(public_key, private_key, curve);
+    Serial.println("Generated ECC key pair: \nECC Public: " + ByteArrayToStringHex(public_key, sizeof(public_key)) + "\nECC Private: " + ByteArrayToStringHex(private_key, sizeof(private_key)));
+    Serial.println();
+    ECDH_exchange_pending_id = outbound.ID;
+    Serial.println("Initiate ECDH Exchange.");
+    String ECDH_hex = ByteArrayToStringHex(public_key, sizeof(public_key));
+    outbound.doc["Intention"] = "ECDH_Exchange";
+    outbound.doc["Event_ID"] = String(mesh.getNodeTime());
+    outbound.doc["ECDH_Key"] = ECDH_hex;
+    outbound.ser();
+    Serial.println(outbound.str);
+    Serial.print("Pinging stranger..");
   }
 }
 
 void changedConnectionCallback() {
-  Serial.println("Connection Changed.");
+  Serial.print("\nConnection Changed.");
 }
 
 void nodeTimeAdjustedCallback(int32_t offset) {
-  Serial.println("Timestamp adjusted to: "+String(mesh.getNodeTime()));
+  //Serial.println("Timestamp adjusted to: " + String(mesh.getNodeTime()));
 }
 
 void RTOS_mesh_update(void *parameters) {
   while (1) {
-    vTaskDelay(50 / portTICK_PERIOD_MS);
     mesh.update();
-  }
-}
-
-void RTOS_feed_watchdog_timer(void *parameters) {
-  while (1) {
     esp_task_wdt_feed();
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+    vTaskDelay(50 / portTICK_PERIOD_MS);
   }
 }
 
-void RTOS_ECDH_handler(void *parameters) {
-  unsigned int ECDH_RETRY = 0;
-  unsigned int AES_RETRY = 0;
-  while (1) {
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    if (ECDH_exchange_pending_id > 0) {
-      mesh.sendSingle(ECDH_exchange_pending_id, ECDH_String);
-      Serial.print(".");
-      ECDH_RETRY++;
-      if (ECDH_RETRY > 20) {
-        Serial.println("\nECDH failed due to timeout.");
-        ECDH_exchange_pending_id = 0;
-        ECDH_RETRY = 0;
-      }
-    } else if (ECDH_exchange_pending_id == 0) {
-      ECDH_RETRY = 0;
-      if (AES_friendliness_pending_id > 0) {
-        JsonDocument AES_Message;
-        JsonDocument clavis_obfuscata;
-        String clavis = encrypt(key);
-        deserializeJson(clavis_obfuscata, clavis);
-        AES_Message["Intention"] = "AES_Friendliness_test";
-        AES_Message["AES_Key"]["IV"] = clavis_obfuscata["IV"];
-        AES_Message["AES_Key"]["Payload"] = clavis_obfuscata["Payload"];
-        String aes_msg;
-        serializeJson(AES_Message, aes_msg);
-        mesh.sendSingle(AES_friendliness_pending_id, aes_msg);
-        AES_RETRY++;
-        if (AES_RETRY > 5) {
-          Serial.println("\nAES friendliness verification failed due to timeout.");
-          AES_friendliness_pending_id = 0;
-          AES_RETRY = 0;
-        }
-      } else if (AES_friendliness_pending_id == 0) AES_RETRY = 0;
-    }
-  }
-}
 void setup() {
   Serial.begin(115200);
-  /*
-  rtc_wdt_protect_off();
-  rtc_wdt_disable();
-  disableCore0WDT();
-  disableCore1WDT();
-  disableLoopWDT();
-  esp_task_wdt_delete(NULL);// kill the dogs*/
   uECC_set_rng(&RNG);
   Serial.println("Hieroglossa Development Project v.0.1.3");
   Serial.println("Configuring Mesh");
   mesh.init(MESH_PREFIX, MESH_PASSWORD, MESH_PORT);
-  mesh.onReceive(&received_JSON_parser);
-  mesh.onNewConnection(&newConnectionCallback);
+  mesh.onReceive(&mesh_received_message_JSON_parser);
+  mesh.onNewConnection(&ECDH_handshake);
   mesh.onChangedConnections(&changedConnectionCallback);
   mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
-  // Create task for FreeRTOS
   Serial.println("Configuring FreeRTOS");
-  xTaskCreatePinnedToCore(RTOS_mesh_update,  // Task function
-                          "Feed_Mesh",       // Task name
-                          4096,              // Stack size
-                          NULL,
-                          1,                           // Priority
-                          NULL,                        // handle
-                          CONFIG_ARDUINO_RUNNING_CORE  // Core 1
-  );                                                   // TaskHandle
-  xTaskCreate(RTOS_feed_watchdog_timer,                // Task function
-              "Feed_WDT",                              // Task name
-              1024,                                    // Stack size
-              NULL,
-              3,    // Priority
-              NULL  // handle
-  );
-  xTaskCreate(RTOS_ECDH_handler,  // Task function
-              "ECDH",             // Task name
-              65536,              // Stack size
-              NULL,
-              2,    // Priority
-              NULL  // handle
-  );
+  xTaskCreatePinnedToCore(RTOS_mesh_update, "Feed_Mesh", 4096, NULL, 3, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+  //xTaskCreate(RTOS_handshake_auditor, "handshake", 65536, NULL, 1, NULL);
   Serial.println("Finished Setup.");
 }
 
 void loop() {
+  vTaskDelay(600 / portTICK_PERIOD_MS);
+  esp_task_wdt_feed();
+  if (ECDH_exchange_pending_id > 0 || AES_friendliness_pending_id > 0) {
+    mesh.sendSingle(outbound.ID, outbound.str);
+    Serial.print(".");
+  }
 }
