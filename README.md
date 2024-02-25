@@ -1,4 +1,4 @@
-# Hieroglossa Development Project - Version 0.1.2
+# Hieroglossa Development Project - Version 0.2.1
 
 Platform: ESP32
 
@@ -11,5 +11,7 @@ Platform: ESP32
   - **Padding:** PKCS7
   - **IV:** Randomly shuffled
 - **1 to Multi ECDH Key Exchange with Keyring**
+- **Message Queue**
+- **FreeRTOS**
 
 
